@@ -97,7 +97,6 @@ def cross_entropy_kernel(
     ignore_idx,
     n_cols,
     n_non_ignore,
-    reduce_loss: tl.constexpr,
     label_smoothing: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -177,13 +176,7 @@ def cross_entropy_kernel(
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
             scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
-        # Scale gradients based on reduction mode
-        # For reduce_loss=True: PyTorch will scale by 1/n_rows, so we need to scale by n_rows/n_non_ignore
-        # For reduce_loss=False: No additional scaling from PyTorch, so we don't scale here
-        if reduce_loss:
-            X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
-        else:
-            X_block = tl.exp(X_block - m) / d - eps
+        X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
         tl.store(X_ptr + X_offsets, X_block.to(grad_dtype), mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written
@@ -211,11 +204,7 @@ def cross_entropy_kernel(
     if y >= vocab_start_idx:
         if y < vocab_end_idx:
             X_y = tl.load(X_ptr + y - vocab_start_idx)
-            # Apply the same conditional scaling logic for the target token
-            if reduce_loss:
-                X_y += -(1 - label_smoothing) / (n_non_ignore)
-            else:
-                X_y += -(1 - label_smoothing)
+            X_y += -(1 - label_smoothing) / (n_non_ignore)
             tl.store(X_ptr + y - vocab_start_idx, X_y)
 
     tl.store(loss_ptr, loss)
@@ -329,7 +318,6 @@ def cross_entropy_forward(
         ignore_idx=ignore_idx,
         n_cols=V,
         n_non_ignore=n_rows,
-        reduce_loss=reduce_loss,
         label_smoothing=label_smoothing,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=32,
